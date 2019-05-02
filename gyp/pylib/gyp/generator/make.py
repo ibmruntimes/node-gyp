@@ -94,6 +94,8 @@ def CalculateVariables(default_variables, params):
     default_variables.setdefault('OS', operating_system)
     if flavor == 'aix':
       default_variables.setdefault('SHARED_LIB_SUFFIX', '.a')
+    elif flavor == 'zos':
+      default_variables.setdefault('SHARED_LIB_SUFFIX', '.x')
     else:
       default_variables.setdefault('SHARED_LIB_SUFFIX', '.so')
     default_variables.setdefault('SHARED_LIB_DIR','$(builddir)/lib.$(TOOLSET)')
@@ -251,6 +253,25 @@ cmd_solink_module = $(LINK.$(TOOLSET)) $(GYP_LDFLAGS) $(LDFLAGS.$(TOOLSET)) -o $
 """
 
 
+LINK_COMMANDS_ZOS = """\
+quiet_cmd_alink = AR($(TOOLSET)) $@
+cmd_alink = rm -f $@ && $(AR.$(TOOLSET)) crs $@ $(filter %.o,$^)
+
+quiet_cmd_alink_thin = AR($(TOOLSET)) $@
+cmd_alink_thin = rm -f $@ && $(AR.$(TOOLSET)) crsT $@ $(filter %.o,$^)
+
+quiet_cmd_link = LINK($(TOOLSET)) $@
+cmd_link = $(LINK.$(TOOLSET)) $(GYP_LDFLAGS) $(LDFLAGS.$(TOOLSET)) -o $@ $(LD_INPUTS) $(LIBS)
+
+quiet_cmd_solink = SOLINK($(TOOLSET)) $@
+cmd_solink = $(LINK.$(TOOLSET)) $(GYP_LDFLAGS) $(LDFLAGS.$(TOOLSET)) -Wl,DLL -o $(patsubst %.x,%.so,$@) $(LD_INPUTS) $(LIBS) && if [ -f $(notdir $@) ]; then /bin/cp $(notdir $@) $@; else true; fi
+
+quiet_cmd_solink_module = SOLINK_MODULE($(TOOLSET)) $@
+cmd_solink_module = $(LINK.$(TOOLSET)) $(GYP_LDFLAGS) $(LDFLAGS.$(TOOLSET)) -o $@ $(filter-out FORCE_DO_CMD, $^) $(LIBS)
+
+"""
+
+
 # Header of toplevel Makefile.
 # This should go into the build tree, but it's easier to keep it here for now.
 SHARED_HEADER = ("""\
@@ -334,7 +355,11 @@ dirx = $(call unreplace_spaces,$(dir $(call replace_spaces,$1)))
 # We write to a dep file on the side first and then rename at the end
 # so we can't end up with a broken dep file.
 depfile = $(depsdir)/$(call replace_spaces,$@).d
+ifeq ($(shell uname),OS/390)
+DEPFLAGS = %(makedep_args)s -qmakedep=gcc -MF $(depfile).raw
+else
 DEPFLAGS = %(makedep_args)s -MF $(depfile).raw
+endif
 
 # We have to fixup the deps output in a few ways.
 # (1) the file output should mention the proper .o file.
@@ -389,7 +414,7 @@ cmd_touch = touch $@
 
 quiet_cmd_copy = COPY $@
 # send stderr to /dev/null to ignore messages when linking directories.
-cmd_copy = rm -rf "$@" && cp %(copy_archive_args)s "$<" "$@"
+cmd_copy = ln -f "$<" "$@" 2>/dev/null || (_UNIX03=YES rm -rf "$@" && cp %(copy_archive_args)s "$<" "$@")
 
 %(link_commands)s
 """
@@ -1376,6 +1401,8 @@ $(obj).$(TOOLSET)/$(TARGET)/%%.o: $(obj)/%%%s FORCE_DO_CMD
       target_prefix = 'lib'
       if self.flavor == 'aix':
         target_ext = '.a'
+      elif self.flavor == 'zos':
+        target_ext = '.x'
       else:
         target_ext = '.so'
     elif self.type == 'none':
@@ -2072,12 +2099,12 @@ def GenerateOutput(target_list, target_dicts, data, params):
         'link_commands': LINK_COMMANDS_ANDROID,
     })
   elif flavor == 'zos':
-    copy_archive_arguments = '-fPR'
+    copy_archive_arguments = '-pPRf'
     makedep_arguments = '-qmakedep=gcc'
     header_params.update({
         'copy_archive_args': copy_archive_arguments,
         'makedep_args': makedep_arguments,
-        'link_commands': LINK_COMMANDS_OS390,
+        'link_commands': LINK_COMMANDS_ZOS,
     })
   elif flavor == 'solaris':
     header_params.update({
@@ -2113,6 +2140,14 @@ def GenerateOutput(target_list, target_dicts, data, params):
     'CXX.host':    GetEnvironFallback(('CXX_host', 'CXX'), 'g++'),
     'LINK.host':   GetEnvironFallback(('LINK_host', 'LINK'), '$(CXX.host)'),
   })
+
+  if flavor == 'zos':
+    header_params.update({
+      'CC.target':   GetEnvironFallback(('CC_target', 'CC'), 'njsc'),
+      'CXX.target':  GetEnvironFallback(('CXX_target', 'CXX'), 'njsc++'),
+      'CC.host':     GetEnvironFallback(('CC_host', 'CC'), 'njsc'),
+      'CXX.host':    GetEnvironFallback(('CXX_host', 'CXX'), 'njsc++'),
+    })
 
   build_file, _, _ = gyp.common.ParseQualifiedTarget(target_list[0])
   make_global_settings_array = data[build_file].get('make_global_settings', [])
